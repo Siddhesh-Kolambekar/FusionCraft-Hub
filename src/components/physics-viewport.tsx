@@ -38,6 +38,7 @@ interface PhysicsViewportProps {
   onReady: () => void;
   onError: (message: string) => void;
   onSimulationStop: (scene: ExperimentSceneData) => void;
+  onLoading: () => void;
 }
 
 interface SimulatedObject {
@@ -76,10 +77,10 @@ function createGeometry(type: CadPrimitiveType) {
   }
 }
 
-function disposeTree(root: Object3D) {
+function disposeTree(root: Object3D, disposeGeometry = true) {
   root.traverse((child) => {
     if (!(child instanceof Mesh) && !(child instanceof Line)) return;
-    child.geometry.dispose();
+    if (disposeGeometry) child.geometry.dispose();
     const materials = Array.isArray(child.material) ? child.material : [child.material];
     materials.forEach((material) => material.dispose());
   });
@@ -112,13 +113,24 @@ export function PhysicsViewport({
   onReady,
   onError,
   onSimulationStop,
+  onLoading,
 }: PhysicsViewportProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<Object3D | null>(null);
   const physicsRef = useRef<PhysicsRuntime | null>(null);
+  const geometryMapRef = useRef(new Map<CadPrimitiveType, ReturnType<typeof createGeometry>>());
+  const sceneDataRef = useRef(sceneData);
   const initialCameraRef = useRef(sceneData.camera);
   const runningRef = useRef(running);
-  const callbacksRef = useRef({ onSelect, onReady, onError, onSimulationStop });
+  const callbacksRef = useRef({ onSelect, onReady, onError, onSimulationStop, onLoading });
+  const physicsConfigKey = JSON.stringify([
+    sceneData.gravity,
+    sceneData.objects.map(({ id, type, scale, bodyType, mass }) => [id, type, scale, bodyType, mass]),
+  ]);
+
+  useEffect(() => {
+    sceneDataRef.current = sceneData;
+  }, [sceneData]);
   const previousRunningRef = useRef(running);
 
   useEffect(() => {
@@ -142,12 +154,13 @@ export function PhysicsViewport({
   }, [running, sceneData, onSimulationStop]);
 
   useEffect(() => {
-    callbacksRef.current = { onSelect, onReady, onError, onSimulationStop };
-  }, [onSelect, onReady, onError, onSimulationStop]);
+    callbacksRef.current = { onSelect, onReady, onError, onSimulationStop, onLoading };
+  }, [onSelect, onReady, onError, onSimulationStop, onLoading]);
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    const geometries = geometryMapRef.current;
     let renderer: WebGLRenderer;
     try {
       renderer = new WebGLRenderer({ antialias: true, alpha: false });
@@ -256,10 +269,12 @@ export function PhysicsViewport({
       renderer.domElement.removeEventListener("pointerdown", onPointerDown);
       renderer.domElement.removeEventListener("pointerup", onPointerUp);
       controls.dispose();
-      disposeTree(root);
+      disposeTree(root, false);
       disposeTree(grid);
       disposeTree(axes);
       disposeTree(floor);
+      for (const geometry of geometries.values()) geometry.dispose();
+      geometries.clear();
       scene.clear();
       rootRef.current = null;
       renderer.dispose();
@@ -273,16 +288,18 @@ export function PhysicsViewport({
     let root: Object3D | null = null;
 
     async function buildPhysicsWorld() {
+      callbacksRef.current.onLoading();
       const rapier = await loadRapier();
       if (disposed) return;
       root = rootRef.current;
       if (!root) throw new Error("The experiment viewport is not ready.");
+      const currentScene = sceneDataRef.current;
       const previous = physicsRef.current;
       previous?.world.free();
       physicsRef.current = null;
-      disposeTree(root);
+      disposeTree(root, false);
 
-      world = new rapier.World({ x: sceneData.gravity[0], y: sceneData.gravity[1], z: sceneData.gravity[2] });
+      world = new rapier.World({ x: currentScene.gravity[0], y: currentScene.gravity[1], z: currentScene.gravity[2] });
       world.timestep = 1 / 60;
       const floorBody = world.createRigidBody(
         rapier.RigidBodyDesc.fixed().setTranslation(0, -0.1, 0),
@@ -290,7 +307,7 @@ export function PhysicsViewport({
       world.createCollider(rapier.ColliderDesc.cuboid(10, 0.1, 10).setFriction(0.9), floorBody);
       const objects = new Map<string, SimulatedObject>();
 
-      for (const object of sceneData.objects) {
+      for (const object of currentScene.objects) {
         const bodyDescription = object.bodyType === "dynamic"
           ? rapier.RigidBodyDesc.dynamic()
           : rapier.RigidBodyDesc.fixed();
@@ -300,7 +317,11 @@ export function PhysicsViewport({
             .setRotation(toPhysicsRotation(object.rotation))
             .setCcdEnabled(object.bodyType === "dynamic"),
         );
-        const geometry = createGeometry(object.type);
+        let geometry = geometryMapRef.current.get(object.type);
+        if (!geometry) {
+          geometry = createGeometry(object.type);
+          geometryMapRef.current.set(object.type, geometry);
+        }
         const mesh = new Mesh(
           geometry,
           new MeshStandardMaterial({ color: object.color, roughness: 0.62, metalness: 0.04 }),
@@ -342,6 +363,26 @@ export function PhysicsViewport({
       if (physicsRef.current?.world === world) physicsRef.current = null;
       if (root) disposeTree(root);
     };
+  }, [physicsConfigKey]);
+
+  useEffect(() => {
+    const runtime = physicsRef.current;
+    if (!runtime || runningRef.current) return;
+    for (const object of sceneData.objects) {
+      const simulated = runtime.objects.get(object.id);
+      if (!simulated) continue;
+      simulated.body.setTranslation(
+        { x: object.position[0], y: object.position[1], z: object.position[2] },
+        true,
+      );
+      simulated.body.setRotation(toPhysicsRotation(object.rotation), true);
+      simulated.mesh.name = object.name;
+      simulated.mesh.position.set(...object.position);
+      simulated.mesh.rotation.set(...object.rotation);
+      simulated.mesh.scale.set(...object.scale);
+      simulated.mesh.visible = object.visible;
+      (simulated.mesh.material as MeshStandardMaterial).color.set(object.color);
+    }
   }, [sceneData]);
 
   return (

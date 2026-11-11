@@ -1,11 +1,5 @@
-import { Euler, Quaternion } from "three";
-import {
-  dissolveCadAssembly,
-  parseCadScene,
-  type CadPrimitiveType,
-  type CadSceneData,
-  type Vector3Tuple,
-} from "@/lib/cad-model";
+import { Euler, Matrix4, Quaternion, Vector3 } from "three";
+import { parseCadScene, type CadPrimitiveType, type CadSceneData, type Vector3Tuple } from "@/lib/cad-model";
 
 export type PhysicsBodyType = "dynamic" | "fixed";
 
@@ -146,21 +140,59 @@ export function addExperimentBody(
 }
 
 export function importCadScene(sceneValue: unknown, idFactory: () => string): ExperimentSceneData {
-  let scene: CadSceneData = parseCadScene(sceneValue);
-  for (const group of [...scene.groups]) scene = dissolveCadAssembly(scene, group.id);
+  const scene: CadSceneData = parseCadScene(sceneValue);
   const experiment = createEmptyExperimentScene();
-  const objects = scene.objects.map((object) => ({
-    id: idFactory(),
-    name: object.name,
-    type: object.type,
-    position: [...object.position] as Vector3Tuple,
-    rotation: [...object.rotation] as Vector3Tuple,
-    scale: [...object.scale] as Vector3Tuple,
-    color: object.color,
-    visible: object.visible,
-    bodyType: "dynamic" as const,
-    mass: 1,
-  }));
+  const groups = new Map(
+    scene.groups.map((group) => [
+      group.id,
+      {
+        transform: new Matrix4().compose(
+          new Vector3(...group.position),
+          new Quaternion().setFromEuler(new Euler(...group.rotation)),
+          new Vector3(...group.scale),
+        ),
+        visible: group.visible,
+      },
+    ]),
+  );
+  const objects = scene.objects.map((object) => {
+    let position = object.position;
+    let rotation = object.rotation;
+    let scale = object.scale;
+    let visible = object.visible;
+    if (object.groupId) {
+      const group = groups.get(object.groupId);
+      if (!group) throw new Error("The CAD scene refers to a missing assembly.");
+      const worldTransform = group.transform.clone().multiply(
+        new Matrix4().compose(
+          new Vector3(...object.position),
+          new Quaternion().setFromEuler(new Euler(...object.rotation)),
+          new Vector3(...object.scale),
+        ),
+      );
+      const worldPosition = new Vector3();
+      const worldRotation = new Quaternion();
+      const worldScale = new Vector3();
+      worldTransform.decompose(worldPosition, worldRotation, worldScale);
+      const worldEuler = new Euler().setFromQuaternion(worldRotation);
+      position = [worldPosition.x, worldPosition.y, worldPosition.z];
+      rotation = [worldEuler.x, worldEuler.y, worldEuler.z];
+      scale = [worldScale.x, worldScale.y, worldScale.z];
+      visible = visible && group.visible;
+    }
+    return {
+      id: idFactory(),
+      name: object.name,
+      type: object.type,
+      position: [...position] as Vector3Tuple,
+      rotation: [...rotation] as Vector3Tuple,
+      scale: [...scale] as Vector3Tuple,
+      color: object.color,
+      visible,
+      bodyType: "dynamic" as const,
+      mass: 1,
+    };
+  });
   return { ...experiment, camera: scene.camera, objects };
 }
 

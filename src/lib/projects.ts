@@ -53,6 +53,7 @@ interface FusionCraftDB extends DBSchema {
 const DATABASE_NAME = "fusioncraft-hub";
 const DATABASE_VERSION = 1;
 let databasePromise: Promise<IDBPDatabase<FusionCraftDB>> | undefined;
+let projectWriteQueue: Promise<void> = Promise.resolve();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -80,6 +81,12 @@ function database(): Promise<IDBPDatabase<FusionCraftDB>> {
   });
 
   return databasePromise;
+}
+
+function enqueueProjectWrite<T>(write: () => Promise<T>): Promise<T> {
+  const result = projectWriteQueue.then(write, write);
+  projectWriteQueue = result.then(() => undefined, () => undefined);
+  return result;
 }
 
 function normalizeProject(project: StoredProjectRecord): ProjectRecord {
@@ -135,9 +142,23 @@ export async function listProjects(kind?: ProjectKind): Promise<ProjectListResul
 }
 
 export async function saveProject(project: ProjectRecord): Promise<void> {
-  const validated = normalizeProject(project);
-  const db = await database();
-  await db.put("projects", validated);
+  await saveProjectsAtomically([project]);
+}
+
+export async function saveProjectsAtomically(projects: ProjectRecord[]): Promise<void> {
+  const validated = projects.map(normalizeProject);
+  if (!validated.length || new Set(validated.map((project) => project.id)).size !== validated.length) {
+    throw new Error("A project save must contain unique project records.");
+  }
+
+  await enqueueProjectWrite(async () => {
+    const db = await database();
+    const transaction = db.transaction("projects", "readwrite");
+    await Promise.all([
+      Promise.all(validated.map((project) => transaction.store.put(project))),
+      transaction.done,
+    ]);
+  });
 }
 
 export async function getProject(id: string): Promise<ProjectRecord | undefined> {
@@ -147,6 +168,9 @@ export async function getProject(id: string): Promise<ProjectRecord | undefined>
 }
 
 export async function deleteProject(id: string): Promise<void> {
-  const db = await database();
-  await db.delete("projects", id);
+  await enqueueProjectWrite(async () => {
+    const db = await database();
+    const transaction = db.transaction("projects", "readwrite");
+    await Promise.all([transaction.store.delete(id), transaction.done]);
+  });
 }

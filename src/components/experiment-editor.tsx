@@ -8,12 +8,15 @@ import {
 } from "@/lib/experiment-model";
 import type { Vector3Tuple } from "@/lib/cad-model";
 import type { ExperimentProjectRecord } from "@/lib/projects";
+import type { ProjectOperationState } from "@/lib/project-operation";
 import { PhysicsViewport } from "@/components/physics-viewport";
 
 interface ExperimentEditorProps {
   project: ExperimentProjectRecord;
   saveLabel: string;
   errorMessage: string;
+  operation: ProjectOperationState;
+  onRetrySave: () => void;
   onSceneChange: (scene: ExperimentSceneData) => void;
   onClose: () => void;
 }
@@ -135,10 +138,13 @@ export function ExperimentEditor({
   project,
   saveLabel,
   errorMessage,
+  operation,
+  onRetrySave,
   onSceneChange,
   onClose,
 }: ExperimentEditorProps) {
   const scene = project.scene;
+  const saving = operation.status === "saving";
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [capturingResult, setCapturingResult] = useState(false);
@@ -149,10 +155,10 @@ export function ExperimentEditor({
 
   const updateScene = useCallback((nextScene: ExperimentSceneData) => {
     setError("");
-    setPhysicsReady(false);
     onSceneChange(nextScene);
   }, [onSceneChange]);
 
+  const handlePhysicsLoading = useCallback(() => setPhysicsReady(false), []);
   const handleSimulationStop = useCallback((nextScene: ExperimentSceneData) => {
     updateScene(nextScene);
     setCapturingResult(false);
@@ -195,12 +201,17 @@ export function ExperimentEditor({
   return (
     <main className="cad-page">
       <header className="cad-project-header">
-        <button className="cad-back-button" disabled={running || capturingResult} onClick={onClose} type="button">← Projects</button>
+        <button className="cad-back-button" disabled={running || capturingResult || saving} onClick={onClose} type="button">← Projects</button>
         <div className="cad-project-title">
           <span className="eyebrow">EXPERIMENT &amp; SIMULATE / PHYSICS</span>
           <h1>{project.title}</h1>
         </div>
-        <span className="cad-save-label"><span className="status-dot" />{saveLabel}</span>
+        <span aria-live="polite" className={saving ? "cad-save-label operation-busy" : "cad-save-label"}>
+          {!saving && <span className="status-dot" />}{saveLabel}
+        </span>
+        {operation.status === "error" && operation.task === "save" && (
+          <button className="text-button project-open-button" onClick={onRetrySave} type="button">Retry save</button>
+        )}
       </header>
 
       <section aria-label="Physics experiment editor" className="cad-shell">
@@ -271,6 +282,7 @@ export function ExperimentEditor({
             <div className="cad-viewport-topline"><span>3D PHYSICS VIEWPORT</span><span>Orbit · pan · zoom</span></div>
             <PhysicsViewport
               onError={setError}
+              onLoading={handlePhysicsLoading}
               onReady={() => setPhysicsReady(true)}
               onSelect={setSelectedId}
               onSimulationStop={handleSimulationStop}

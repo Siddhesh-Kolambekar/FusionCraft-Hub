@@ -39,6 +39,7 @@ interface SceneViewportProps {
   sceneData: CadSceneData;
   selection: CadSelection;
   mode: TransformMode;
+  disabled?: boolean;
   onSelect: (selection: CadSelection) => void;
   onSceneChange: (scene: CadSceneData) => void;
   onError: (message: string) => void;
@@ -55,10 +56,10 @@ function createGeometry(type: CadPrimitiveType) {
   }
 }
 
-function disposeTree(root: Object3D) {
+function disposeTree(root: Object3D, disposeGeometry = true) {
   root.traverse((child) => {
     if (!(child instanceof Mesh) && !(child instanceof Line)) return;
-    child.geometry.dispose();
+    if (disposeGeometry) child.geometry.dispose();
     const materials = Array.isArray(child.material) ? child.material : [child.material];
     materials.forEach((material) => material.dispose());
   });
@@ -84,6 +85,7 @@ export function SceneViewport({
   sceneData,
   selection,
   mode,
+  disabled = false,
   onSelect,
   onSceneChange,
   onError,
@@ -101,6 +103,7 @@ export function SceneViewport({
   const sceneRootRef = useRef<Object3D | null>(null);
   const objectMapRef = useRef(new Map<string, Mesh>());
   const groupMapRef = useRef(new Map<string, Object3D>());
+  const geometryMapRef = useRef(new Map<CadPrimitiveType, ReturnType<typeof createGeometry>>());
   const transformRef = useRef<TransformControls | null>(null);
 
   useEffect(() => {
@@ -112,6 +115,7 @@ export function SceneViewport({
     if (!host) return;
     const objectMap = objectMapRef.current;
     const groupMap = groupMapRef.current;
+    const geometries = geometryMapRef.current;
 
     let renderer: WebGLRenderer;
     try {
@@ -271,7 +275,9 @@ export function SceneViewport({
       transform.detach();
       transform.dispose();
       orbit.dispose();
-      disposeTree(root);
+      disposeTree(root, false);
+      for (const geometry of geometries.values()) geometry.dispose();
+      geometries.clear();
       disposeTree(grid);
       disposeTree(axes);
       scene.clear();
@@ -287,30 +293,46 @@ export function SceneViewport({
   useEffect(() => {
     const root = sceneRootRef.current;
     if (!root) return;
-    disposeTree(root);
-    objectMapRef.current.clear();
-    groupMapRef.current.clear();
+    const groups = groupMapRef.current;
+    const objectMap = objectMapRef.current;
+    const groupIds = new Set(sceneData.groups.map((group) => group.id));
+    const objectIds = new Set(sceneData.objects.map((object) => object.id));
 
-    const groups = new Map(
-      sceneData.groups.map((group) => {
-        const groupObject = new Object3D();
-        groupObject.name = group.name;
-        groupObject.position.set(...group.position);
-        groupObject.rotation.set(...group.rotation);
-        groupObject.scale.set(...group.scale);
-        groupObject.visible = group.visible;
-        groupObject.userData.cadGroupId = group.id;
-        groupMapRef.current.set(group.id, groupObject);
-        root.add(groupObject);
-        return [group.id, groupObject] as const;
-      }),
-    );
+    for (const [id, groupObject] of groups) {
+      if (groupIds.has(id)) continue;
+      groupObject.removeFromParent();
+      groups.delete(id);
+    }
+
+    for (const group of sceneData.groups) {
+      let groupObject = groups.get(group.id);
+      if (!groupObject) {
+        groupObject = new Object3D();
+        groups.set(group.id, groupObject);
+      }
+      groupObject.name = group.name;
+      groupObject.position.set(...group.position);
+      groupObject.rotation.set(...group.rotation);
+      groupObject.scale.set(...group.scale);
+      groupObject.visible = group.visible;
+      groupObject.userData.cadGroupId = group.id;
+      if (groupObject.parent !== root) root.add(groupObject);
+    }
 
     for (const object of sceneData.objects) {
-      const mesh = new Mesh(
-        createGeometry(object.type),
-        new MeshStandardMaterial({ color: object.color, roughness: 0.62, metalness: 0.04 }),
-      );
+      let mesh = objectMap.get(object.id);
+      if (!mesh) {
+        let geometry = geometryMapRef.current.get(object.type);
+        if (!geometry) {
+          geometry = createGeometry(object.type);
+          geometryMapRef.current.set(object.type, geometry);
+        }
+        mesh = new Mesh(
+          geometry,
+          new MeshStandardMaterial({ color: object.color, roughness: 0.62, metalness: 0.04 }),
+        );
+        objectMap.set(object.id, mesh);
+      }
       mesh.name = object.name;
       mesh.position.set(...object.position);
       mesh.rotation.set(...object.rotation);
@@ -320,7 +342,15 @@ export function SceneViewport({
       mesh.userData.cadGroupId = object.groupId;
       const parent = object.groupId ? groups.get(object.groupId) : undefined;
       (parent ?? root).add(mesh);
-      objectMapRef.current.set(object.id, mesh);
+      (mesh.material as MeshStandardMaterial).color.set(object.color);
+    }
+
+    for (const [id, mesh] of objectMap) {
+      if (objectIds.has(id)) continue;
+      mesh.removeFromParent();
+      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      materials.forEach((material) => material.dispose());
+      objectMap.delete(id);
     }
   }, [sceneData]);
 
@@ -344,7 +374,8 @@ export function SceneViewport({
   return (
     <div
       aria-label="Interactive 3D design viewport"
-      className="cad-viewport"
+      aria-disabled={disabled}
+      className={disabled ? "cad-viewport disabled" : "cad-viewport"}
       ref={hostRef}
       role="application"
     />

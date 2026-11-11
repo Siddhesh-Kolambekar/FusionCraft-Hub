@@ -11,6 +11,7 @@ import {
   type Vector3Tuple,
 } from "@/lib/cad-model";
 import type { CraftProjectRecord } from "@/lib/projects";
+import type { ProjectOperationState } from "@/lib/project-operation";
 import {
   SceneViewport,
   type CadSelection,
@@ -21,6 +22,8 @@ interface CadEditorProps {
   project: CraftProjectRecord;
   saveLabel: string;
   errorMessage: string;
+  operation: ProjectOperationState;
+  onRetrySave: () => void;
   onSceneChange: (scene: CadSceneData) => void;
   onTransfer: (scene: CadSceneData) => Promise<void>;
   onClose: () => void;
@@ -29,23 +32,25 @@ interface CadEditorProps {
 function ObjectProperties({
   object,
   onChange,
+  disabled,
 }: {
   object: CadObject;
   onChange: (change: Partial<CadObject>) => void;
+  disabled: boolean;
 }) {
   return (
     <>
       <label className="cad-property">
         <span>Name</span>
-        <input aria-label="Object name" maxLength={80} onChange={(event) => onChange({ name: event.target.value })} value={object.name} />
+        <input aria-label="Object name" disabled={disabled} maxLength={80} onChange={(event) => onChange({ name: event.target.value })} value={object.name} />
       </label>
       <label className="cad-property cad-color-property">
         <span>Material color</span>
-        <input aria-label="Material color" onChange={(event) => onChange({ color: event.target.value })} type="color" value={object.color} />
+        <input aria-label="Material color" disabled={disabled} onChange={(event) => onChange({ color: event.target.value })} type="color" value={object.color} />
       </label>
-      <VectorProperty label="Position" value={object.position} onChange={(position) => onChange({ position })} />
-      <VectorProperty label="Rotation" value={object.rotation} degrees onChange={(rotation) => onChange({ rotation })} />
-      <VectorProperty label="Scale" value={object.scale} min={0.01} step={0.1} onChange={(scale) => onChange({ scale })} />
+      <VectorProperty disabled={disabled} label="Position" value={object.position} onChange={(position) => onChange({ position })} />
+      <VectorProperty disabled={disabled} label="Rotation" value={object.rotation} degrees onChange={(rotation) => onChange({ rotation })} />
+      <VectorProperty disabled={disabled} label="Scale" value={object.scale} min={0.01} step={0.1} onChange={(scale) => onChange({ scale })} />
     </>
   );
 }
@@ -53,19 +58,21 @@ function ObjectProperties({
 function GroupProperties({
   group,
   onChange,
+  disabled,
 }: {
   group: NonNullable<CadSceneData["groups"][number]>;
   onChange: (change: Partial<typeof group>) => void;
+  disabled: boolean;
 }) {
   return (
     <>
       <label className="cad-property">
         <span>Assembly name</span>
-        <input aria-label="Assembly name" maxLength={80} onChange={(event) => onChange({ name: event.target.value })} value={group.name} />
+        <input aria-label="Assembly name" disabled={disabled} maxLength={80} onChange={(event) => onChange({ name: event.target.value })} value={group.name} />
       </label>
-      <VectorProperty label="Position" value={group.position} onChange={(position) => onChange({ position })} />
-      <VectorProperty label="Rotation" value={group.rotation} degrees onChange={(rotation) => onChange({ rotation })} />
-      <VectorProperty label="Scale" value={group.scale} min={0.01} step={0.1} onChange={(scale) => onChange({ scale })} />
+      <VectorProperty disabled={disabled} label="Position" value={group.position} onChange={(position) => onChange({ position })} />
+      <VectorProperty disabled={disabled} label="Rotation" value={group.rotation} degrees onChange={(rotation) => onChange({ rotation })} />
+      <VectorProperty disabled={disabled} label="Scale" value={group.scale} min={0.01} step={0.1} onChange={(scale) => onChange({ scale })} />
     </>
   );
 }
@@ -76,6 +83,7 @@ function VectorProperty({
   degrees = false,
   min,
   step = 0.1,
+  disabled = false,
   onChange,
 }: {
   label: string;
@@ -83,6 +91,7 @@ function VectorProperty({
   degrees?: boolean;
   min?: number;
   step?: number;
+  disabled?: boolean;
   onChange: (value: Vector3Tuple) => void;
 }) {
   const axisLabels = ["X", "Y", "Z"];
@@ -97,6 +106,7 @@ function VectorProperty({
               <span>{axis}</span>
               <input
                 aria-label={`${label} ${axis}`}
+                disabled={disabled}
                 min={min}
                 onChange={(event) => {
                   const next = [...value] as Vector3Tuple;
@@ -120,6 +130,8 @@ export function CadEditor({
   project,
   saveLabel,
   errorMessage,
+  operation,
+  onRetrySave,
   onSceneChange,
   onTransfer,
   onClose,
@@ -129,7 +141,9 @@ export function CadEditor({
   const [mode, setMode] = useState<TransformMode>("select");
   const [viewError, setViewError] = useState("");
   const [message, setMessage] = useState("");
-  const [transferring, setTransferring] = useState(false);
+  const transferring = operation.status === "transferring";
+  const saving = operation.status === "saving";
+  const transferFailed = operation.status === "error" && operation.task === "transfer";
   const scene = project.scene;
   const selectedObject = selection?.kind === "object"
     ? scene.objects.find((object) => object.id === selection.id)
@@ -148,12 +162,10 @@ export function CadEditor({
   async function transferToExperiment() {
     if (transferring) return;
     setMessage("");
-    setTransferring(true);
     try {
       await onTransfer(scene);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not create an experiment from this design.");
-      setTransferring(false);
     }
   }
 
@@ -292,24 +304,29 @@ export function CadEditor({
   return (
     <main className="cad-page">
       <header className="cad-project-header">
-        <button className="cad-back-button" onClick={onClose} type="button">← Projects</button>
+        <button className="cad-back-button" disabled={saving || transferring} onClick={onClose} type="button">← Projects</button>
         <div className="cad-project-title">
           <span className="eyebrow">CRAFT &amp; ASSEMBLE / DESIGN</span>
           <h1>{project.title}</h1>
         </div>
-        <button className="cad-back-button" disabled={transferring} onClick={transferToExperiment} type="button">
-          {transferring ? "Preparing physics…" : "Open in physics lab"}
+        <button className={transferring ? "cad-back-button operation-button-busy" : "cad-back-button"} disabled={transferring} onClick={transferToExperiment} type="button">
+          {transferring ? "Preparing physics…" : transferFailed ? "Retry transfer" : "Open in physics lab"}
         </button>
-        <span className="cad-save-label"><span className="status-dot" />{saveLabel}</span>
+        <span aria-live="polite" className={saving ? "cad-save-label operation-busy" : "cad-save-label"}>
+          {!saving && <span className="status-dot" />}{saveLabel}
+        </span>
+        {operation.status === "error" && operation.task === "save" && (
+          <button className="text-button project-open-button" onClick={onRetrySave} type="button">Retry save</button>
+        )}
       </header>
 
-      <section className="cad-shell" aria-label="CAD editor">
+      <section aria-busy={transferring} className="cad-shell" aria-label="CAD editor">
         <div className="cad-toolbar">
           <div className="cad-tool-group" aria-label="Add primitive">
             <span className="cad-tool-caption">ADD</span>
-            <button className="cad-tool-button" onClick={() => addPrimitive("box")} type="button" title="Add box">＋ Box</button>
-            <button className="cad-tool-button" onClick={() => addPrimitive("sphere")} type="button" title="Add sphere">＋ Sphere</button>
-            <button className="cad-tool-button" onClick={() => addPrimitive("cylinder")} type="button" title="Add cylinder">＋ Cylinder</button>
+            <button className="cad-tool-button" disabled={transferring} onClick={() => addPrimitive("box")} type="button" title="Add box">＋ Box</button>
+            <button className="cad-tool-button" disabled={transferring} onClick={() => addPrimitive("sphere")} type="button" title="Add sphere">＋ Sphere</button>
+            <button className="cad-tool-button" disabled={transferring} onClick={() => addPrimitive("cylinder")} type="button" title="Add cylinder">＋ Cylinder</button>
           </div>
           <div className="cad-tool-group" aria-label="Transform mode">
             <span className="cad-tool-caption">TRANSFORM</span>
@@ -322,6 +339,7 @@ export function CadEditor({
               <button
                 aria-pressed={mode === value}
                 className={mode === value ? "cad-tool-button selected" : "cad-tool-button"}
+                disabled={transferring}
                 key={value}
                 onClick={() => setMode(value)}
                 type="button"
@@ -332,10 +350,10 @@ export function CadEditor({
           </div>
           <div className="cad-tool-group cad-action-group">
             <span className="cad-tool-caption">ASSEMBLE</span>
-            <button className="cad-tool-button" disabled={!canGroup} onClick={createAssembly} type="button">Group selected</button>
-            <button className="cad-tool-button" disabled={selection?.kind !== "group"} onClick={ungroupSelection} type="button">Ungroup</button>
-            <button className="cad-tool-button" disabled={!selection} onClick={duplicateSelection} type="button">Duplicate</button>
-            <button className="cad-tool-button destructive" disabled={!selection} onClick={deleteSelection} type="button">Delete</button>
+            <button className="cad-tool-button" disabled={transferring || !canGroup} onClick={createAssembly} type="button">Group selected</button>
+            <button className="cad-tool-button" disabled={transferring || selection?.kind !== "group"} onClick={ungroupSelection} type="button">Ungroup</button>
+            <button className="cad-tool-button" disabled={transferring || !selection} onClick={duplicateSelection} type="button">Duplicate</button>
+            <button className="cad-tool-button destructive" disabled={transferring || !selection} onClick={deleteSelection} type="button">Delete</button>
           </div>
         </div>
 
@@ -350,10 +368,10 @@ export function CadEditor({
               {scene.groups.map((group) => (
                 <div className="cad-tree-group" key={group.id}>
                   <div className={selection?.kind === "group" && selection.id === group.id ? "cad-tree-row active" : "cad-tree-row"}>
-                    <button className="cad-tree-name" onClick={() => setSelection({ kind: "group", id: group.id })} type="button">
+                    <button className="cad-tree-name" disabled={transferring} onClick={() => setSelection({ kind: "group", id: group.id })} type="button">
                       <span className="tree-group-icon" aria-hidden="true">▱</span>{group.name}
                     </button>
-                    <button aria-label={`${group.visible ? "Hide" : "Show"} ${group.name}`} className="cad-visibility" onClick={() => toggleGroupVisibility(group.id)} type="button">{group.visible ? "◉" : "○"}</button>
+                    <button aria-label={`${group.visible ? "Hide" : "Show"} ${group.name}`} className="cad-visibility" disabled={transferring} onClick={() => toggleGroupVisibility(group.id)} type="button">{group.visible ? "◉" : "○"}</button>
                   </div>
                   {scene.objects.filter((object) => object.groupId === group.id).map((object) => (
                     <ObjectTreeRow
@@ -361,6 +379,7 @@ export function CadEditor({
                       depth={1}
                       key={object.id}
                       object={object}
+                      disabled={transferring}
                       selected={selection?.kind === "object" && selection.id === object.id}
                       onCheck={(checked) => toggleAssemblySelection(object, checked)}
                       onSelect={() => setSelection({ kind: "object", id: object.id })}
@@ -375,6 +394,7 @@ export function CadEditor({
                   depth={0}
                   key={object.id}
                   object={object}
+                  disabled={transferring}
                   selected={selection?.kind === "object" && selection.id === object.id}
                   onCheck={(checked) => toggleAssemblySelection(object, checked)}
                   onSelect={() => setSelection({ kind: "object", id: object.id })}
@@ -389,6 +409,7 @@ export function CadEditor({
           <section className="cad-viewport-panel">
             <div className="cad-viewport-topline"><span>3D VIEWPORT</span><span>Orbit · pan · zoom</span></div>
             <SceneViewport
+              disabled={transferring}
               mode={mode}
               onError={setViewError}
               onSceneChange={commit}
@@ -396,6 +417,9 @@ export function CadEditor({
               sceneData={scene}
               selection={selection}
             />
+            {transferring && (
+              <div className="async-viewport-overlay" role="status">Preparing physics scene…</div>
+            )}
             {viewError && <p className="cad-viewport-error" role="alert">{viewError}</p>}
             <div className="cad-viewport-hint">Drag the gizmo to transform · Right-drag to pan · Scroll to zoom</div>
           </section>
@@ -407,16 +431,16 @@ export function CadEditor({
             {selectedObject ? (
               <>
                 <div className="cad-selection-kind"><span className="selection-mark" /> {selectedObject.type}</div>
-                <ObjectProperties object={selectedObject} onChange={(change) => updateObject(selectedObject.id, change)} />
-                <button className="cad-visibility-wide" onClick={() => toggleObjectVisibility(selectedObject)} type="button">
+                <ObjectProperties disabled={transferring} object={selectedObject} onChange={(change) => updateObject(selectedObject.id, change)} />
+                <button className="cad-visibility-wide" disabled={transferring} onClick={() => toggleObjectVisibility(selectedObject)} type="button">
                   {selectedObject.visible ? "Hide component" : "Show component"}
                 </button>
               </>
             ) : selectedGroup ? (
               <>
                 <div className="cad-selection-kind"><span className="selection-mark group-mark" /> Assembly · {scene.objects.filter((object) => object.groupId === selectedGroup.id).length} components</div>
-                <GroupProperties group={selectedGroup} onChange={(change) => updateGroup(selectedGroup.id, change)} />
-                <button className="cad-visibility-wide" onClick={() => toggleGroupVisibility(selectedGroup.id)} type="button">
+                <GroupProperties disabled={transferring} group={selectedGroup} onChange={(change) => updateGroup(selectedGroup.id, change)} />
+                <button className="cad-visibility-wide" disabled={transferring} onClick={() => toggleGroupVisibility(selectedGroup.id)} type="button">
                   {selectedGroup.visible ? "Hide assembly" : "Show assembly"}
                 </button>
               </>
@@ -436,6 +460,7 @@ function ObjectTreeRow({
   depth,
   selected,
   checked,
+  disabled,
   onCheck,
   onSelect,
   onToggleVisibility,
@@ -444,6 +469,7 @@ function ObjectTreeRow({
   depth: 0 | 1;
   selected: boolean;
   checked: boolean;
+  disabled: boolean;
   onCheck: (checked: boolean) => void;
   onSelect: () => void;
   onToggleVisibility: () => void;
@@ -453,14 +479,15 @@ function ObjectTreeRow({
       <input
         aria-label={`Select ${object.name} for assembly`}
         checked={checked}
+        disabled={disabled}
         onChange={(event) => onCheck(event.target.checked)}
         type="checkbox"
       />
-      <button className="cad-tree-name" onClick={onSelect} type="button">
+      <button className="cad-tree-name" disabled={disabled} onClick={onSelect} type="button">
         <span className={`tree-object-icon ${object.type}`} aria-hidden="true">{object.type === "box" ? "▧" : object.type === "sphere" ? "●" : "⬭"}</span>
         <span>{object.name}</span>
       </button>
-      <button aria-label={`${object.visible ? "Hide" : "Show"} ${object.name}`} className="cad-visibility" onClick={onToggleVisibility} type="button">{object.visible ? "◉" : "○"}</button>
+      <button aria-label={`${object.visible ? "Hide" : "Show"} ${object.name}`} className="cad-visibility" disabled={disabled} onClick={onToggleVisibility} type="button">{object.visible ? "◉" : "○"}</button>
     </div>
   );
 }

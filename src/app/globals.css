@@ -141,6 +141,16 @@ h1, h2, p { margin-top: 0; }
 .cad-project-title { flex: 1; }
 .cad-project-title h1 { margin: 4px 0 0; font: 700 19px "Segoe UI", Arial, sans-serif; letter-spacing: -.4px; }
 .cad-save-label { display: flex; align-items: center; gap: 8px; color: #626575; font-size: 10px; }
+.cad-save-label.operation-busy::before, .async-operation-status::before, .async-viewport-overlay::before { width: 12px; height: 12px; flex: 0 0 12px; border: 2px solid #dcd8f7; border-top-color: var(--violet); border-radius: 50%; content: ""; animation: operation-spin .8s linear infinite; }
+.operation-error { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: #9c3d3d; font-size: 11px; }
+.operation-error p { margin: 0; }
+.async-operation-status { display: flex; align-items: center; gap: 8px; color: #686a78; font-size: 11px; }
+.async-viewport-overlay { position: absolute; z-index: 3; inset: 34px 0 25px; display: flex; align-items: center; justify-content: center; gap: 9px; color: #50469c; background: #f8f7fcdd; font-size: 12px; font-weight: 600; }
+.cad-viewport.disabled { pointer-events: none; }
+.operation-button-busy { display: inline-flex; align-items: center; gap: 8px; }
+.operation-button-busy::before { width: 11px; height: 11px; border: 2px solid #dad7eb; border-top-color: #6853dc; border-radius: 50%; content: ""; animation: operation-spin .8s linear infinite; }
+@keyframes operation-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .cad-save-label.operation-busy::before, .async-operation-status::before, .async-viewport-overlay::before, .operation-button-busy::before { animation: none; } }
 .cad-shell { overflow: hidden; border: 1px solid #e4e3eb; border-radius: 10px; background: #fff; box-shadow: 0 8px 26px #25243808; }
 .cad-toolbar { display: flex; min-height: 58px; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--line); background: #fcfcfe; }
 .cad-tool-group { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
